@@ -1,148 +1,76 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>QR Code Scanner</title>
+  <meta charset="utf-8">
+  <title>Live QR Token Scanner</title>
   <style>
-    body, html {
-      margin: 0;
-      padding: 0;
-      width: 100%;
-      height: 100%;
-      overflow: hidden;
-      background: #000;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      position: relative;
-      font-family: sans-serif;
-    }
-    #video {
-      width: 100%;
-      height: auto;
-      object-fit: cover;
-    }
-    #status {
-      position: absolute;
-      bottom: 20px;
-      left: 50%;
-      transform: translateX(-50%);
-      font-size: 1.5rem;
-      font-weight: bold;
-      background: rgba(0, 0, 0, 0.6);
-      color: #fff;
-      padding: 0.5rem 1rem;
-      border-radius: 0.5rem;
-      pointer-events: none;
-    }
-    canvas { display: none; }
+    body { font-family: sans-serif; display: flex; flex-direction: column; align-items: center; padding: 1rem; }
+    #video { border: 2px solid #444; border-radius: 4px; }
+    #result { margin-top: 1rem; font-size: 1.25rem; }
   </style>
 </head>
 <body>
-  <video id="video" playsinline muted autoplay></video>
-  <canvas id="canvas"></canvas>
-  <div id="status">Initializing...</div>
+  <video id="video" width="600" height="450" autoplay playsinline></video>
+  <div id="result">scanning</div>
 
-  <!-- jsQR library -->
+  <!-- jsQR library from CDN -->
   <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
-   <script>
-    (async () => {
-      const video = document.getElementById('video');
-      const canvasEl = document.getElementById('canvas');
-      const ctx = canvasEl.getContext('2d');
-      const statusEl = document.getElementById('status');
-      const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-      let tokens = [];
+  <script>
+  const video      = document.getElementById('video');
+  const resultElem = document.getElementById('result');
+  const canvas     = document.createElement('canvas');
+  const ctx        = canvas.getContext('2d');
+  const tokensMap  = new Map();
 
-      // 1) load database
-      statusEl.textContent = 'Loading database...';
-      try {
-        const res = await fetch('tokens.json');
-        if (!res.ok) throw new Error(res.statusText);
-        tokens = await res.json();
-        statusEl.textContent = 'Database loaded. Starting camera...';
-      } catch (err) {
-        console.error(err);
-        statusEl.textContent = 'Error loading database';
-        return;
-      }
+  // 1) Load tokens.json as an object of { token: name, … }
+  fetch('tokens.json')
+    .then(r => r.json())
+    .then(obj => {
+      Object.entries(obj).forEach(([token, name]) => {
+        tokensMap.set(token, name);
+      });
+    })
+    .catch(err => {
+      console.error('Failed to load tokens.json', err);
+      resultElem.textContent = 'Error loading tokens';
+    });
 
-      // 2) start camera
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: 'environment' }
-        });
-        video.srcObject = stream;
-        await video.play();
-        statusEl.textContent = 'Scanning...';
-      } catch (err) {
-        console.error(err);
-        statusEl.textContent = 'Camera error';
-        return;
-      }
+  // 2) Start the camera
+  navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } })
+    .then(stream => {
+      video.srcObject = stream;
+      video.onloadedmetadata = () => requestAnimationFrame(scanFrame);
+    })
+    .catch(err => {
+      console.error('Camera error:', err);
+      resultElem.textContent = 'Error accessing camera';
+    });
 
-      // flag so we only process one scan at a time
-      let isScanning = true;
+  // 3) Per‑frame scan
+  function scanFrame() {
+    if (video.readyState === video.HAVE_ENOUGH_DATA) {
+      canvas.width  = video.videoWidth;
+      canvas.height = video.videoHeight;
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-      function scanFrame() {
-        if (video.readyState === video.HAVE_ENOUGH_DATA) {
-          canvasEl.width = video.videoWidth;
-          canvasEl.height = video.videoHeight;
-          ctx.drawImage(video, 0, 0, canvasEl.width, canvasEl.height);
-          const imageData = ctx.getImageData(
-            0, 0, canvasEl.width, canvasEl.height
-          );
-          const code = jsQR(
-            imageData.data,
-            imageData.width,
-            imageData.height,
-            { inversionAttempts: 'attemptBoth' }
-          );
+      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      const code = jsQR(imageData.data, imageData.width, imageData.height, {
+        inversionAttempts: 'dontInvert'
+      });
 
-          // only verify if we’re not already in a “found” cooldown
-          if (code && isScanning) {
-            isScanning = false;
-            verifyCode(code.data);
-          }
-        }
-        requestAnimationFrame(scanFrame);
-      }
-
-      function verifyCode(data) {
-        const scannedId = data.trim();
-        // loose match by converting both sides to string
-        const record = tokens.find(t => String(t.id) === scannedId);
-
-        if (record) {
-          playBeep();
-          // green and show the name
-          statusEl.textContent = `✔️ ${record.name}`;
-          statusEl.style.color = 'lime';
+      if (code) {
+        const token = code.data.trim();
+        if (tokensMap.has(token)) {
+          resultElem.textContent = tokensMap.get(token);
         } else {
-          statusEl.textContent = '❌ Not recognized';
-          statusEl.style.color = 'red';
+          resultElem.textContent = 'token not recognized';
         }
-
-        // after 1 s, go back to scanning mode
-        setTimeout(() => {
-          statusEl.textContent = 'Scanning...';
-          statusEl.style.color = '#fff';
-          isScanning = true;
-        }, 1000);
+      } else {
+        resultElem.textContent = 'scanning';
       }
-
-      function playBeep() {
-        const osc = audioCtx.createOscillator();
-        osc.connect(audioCtx.destination);
-        osc.frequency.value = 750;
-        osc.start();
-        setTimeout(() => osc.stop(), 100);
-      }
-
-      // kick things off
-      requestAnimationFrame(scanFrame);
-    })();
-  </script>
+    }
+    requestAnimationFrame(scanFrame);
+  }
+</script>
 </body>
 </html>
