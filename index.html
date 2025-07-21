@@ -15,62 +15,77 @@
 
   <!-- jsQR library from CDN -->
   <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
+    <!-- jsQR (for QR decoding) -->
+  <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
+
   <script>
-  const video      = document.getElementById('video');
-  const resultElem = document.getElementById('result');
-  const canvas     = document.createElement('canvas');
-  const ctx        = canvas.getContext('2d');
-  const tokensMap  = new Map();
+    const video      = document.getElementById('video');
+    const resultElem = document.getElementById('result');
+    const canvas     = document.createElement('canvas');
+    const ctx        = canvas.getContext('2d');
+    const tokensMap  = new Map();
 
-  // 1) Load tokens.json as an object of { token: name, … }
-  fetch('tokens.json')
-    .then(r => r.json())
-    .then(obj => {
-      Object.entries(obj).forEach(([token, name]) => {
-        tokensMap.set(token, name);
-      });
-    })
-    .catch(err => {
-      console.error('Failed to load tokens.json', err);
-      resultElem.textContent = 'Error loading tokens';
-    });
-
-  // 2) Start the camera
-  navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } })
-    .then(stream => {
-      video.srcObject = stream;
-      video.onloadedmetadata = () => requestAnimationFrame(scanFrame);
-    })
-    .catch(err => {
-      console.error('Camera error:', err);
-      resultElem.textContent = 'Error accessing camera';
-    });
-
-  // 3) Per‑frame scan
-  function scanFrame() {
-    if (video.readyState === video.HAVE_ENOUGH_DATA) {
-      canvas.width  = video.videoWidth;
-      canvas.height = video.videoHeight;
-      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-
-      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-      const code = jsQR(imageData.data, imageData.width, imageData.height, {
-        inversionAttempts: 'dontInvert'
-      });
-
-      if (code) {
-        const token = code.data.trim();
-        if (tokensMap.has(token)) {
-          resultElem.textContent = tokensMap.get(token);
-        } else {
-          resultElem.textContent = 'token not recognized';
-        }
-      } else {
-        resultElem.textContent = 'scanning';
-      }
+    // helper: SHA‑256 → hex string
+    async function sha256hex(str) {
+      const buf = new TextEncoder().encode(str);
+      const hashBuf = await crypto.subtle.digest('SHA-256', buf);
+      // convert ArrayBuffer to hex
+      return Array.from(new Uint8Array(hashBuf))
+                  .map(b => b.toString(16).padStart(2, '0'))
+                  .join('');
     }
-    requestAnimationFrame(scanFrame);
-  }
-</script>
+
+    // 1) load tokens.json (hash → name)
+    fetch('tokens.json')
+      .then(r => r.json())
+      .then(obj => {
+        Object.entries(obj).forEach(([h, name]) => tokensMap.set(h, name));
+      })
+      .catch(err => {
+        console.error('tokens.json load failed', err);
+        resultElem.textContent = 'Error loading tokens';
+      });
+
+    // 2) start camera
+    navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } })
+      .then(stream => {
+        video.srcObject = stream;
+        video.onloadedmetadata = () => requestAnimationFrame(scanFrame);
+      })
+      .catch(err => {
+        console.error('camera error', err);
+        resultElem.textContent = 'Error accessing camera';
+      });
+
+    // 3) scan loop
+    function scanFrame() {
+      if (video.readyState === video.HAVE_ENOUGH_DATA) {
+        canvas.width  = video.videoWidth;
+        canvas.height = video.videoHeight;
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+        const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        const code = jsQR(imgData.data, imgData.width, imgData.height, {
+          inversionAttempts: 'dontInvert'
+        });
+
+        if (code) {
+          const token = code.data.trim();
+          resultElem.textContent = 'verifying…';
+          // hash it and look up
+          sha256hex(token).then(hash => {
+            if (tokensMap.has(hash)) {
+              resultElem.textContent = tokensMap.get(hash);
+            } else {
+              resultElem.textContent = 'token not recognized';
+            }
+          });
+        } else {
+          resultElem.textContent = 'scanning';
+        }
+      }
+      requestAnimationFrame(scanFrame);
+    }
+  </script>
 </body>
 </html>
