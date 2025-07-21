@@ -46,7 +46,7 @@
 
   <!-- jsQR library -->
   <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
-  <script>
+   <script>
     (async () => {
       const video = document.getElementById('video');
       const canvasEl = document.getElementById('canvas');
@@ -55,41 +55,54 @@
       const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
       let tokens = [];
 
-      // Load token database: array of {id: '...', name: '...'}
+      // 1) load database
       statusEl.textContent = 'Loading database...';
       try {
         const res = await fetch('tokens.json');
         if (!res.ok) throw new Error(res.statusText);
         tokens = await res.json();
-        statusEl.textContent = 'Database loaded.';
+        statusEl.textContent = 'Database loaded. Starting camera...';
       } catch (err) {
-        console.error('Failed to load tokens:', err);
+        console.error(err);
         statusEl.textContent = 'Error loading database';
         return;
       }
 
-      // Start camera
-      statusEl.textContent = 'Starting camera...';
+      // 2) start camera
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: 'environment' }
+        });
         video.srcObject = stream;
         await video.play();
         statusEl.textContent = 'Scanning...';
-        requestAnimationFrame(scanFrame);
       } catch (err) {
-        console.error('Camera error:', err);
+        console.error(err);
         statusEl.textContent = 'Camera error';
         return;
       }
+
+      // flag so we only process one scan at a time
+      let isScanning = true;
 
       function scanFrame() {
         if (video.readyState === video.HAVE_ENOUGH_DATA) {
           canvasEl.width = video.videoWidth;
           canvasEl.height = video.videoHeight;
           ctx.drawImage(video, 0, 0, canvasEl.width, canvasEl.height);
-          const imageData = ctx.getImageData(0, 0, canvasEl.width, canvasEl.height);
-          const code = jsQR(imageData.data, imageData.width, imageData.height, { inversionAttempts: 'attemptBoth' });
-          if (code) {
+          const imageData = ctx.getImageData(
+            0, 0, canvasEl.width, canvasEl.height
+          );
+          const code = jsQR(
+            imageData.data,
+            imageData.width,
+            imageData.height,
+            { inversionAttempts: 'attemptBoth' }
+          );
+
+          // only verify if we’re not already in a “found” cooldown
+          if (code && isScanning) {
+            isScanning = false;
             verifyCode(code.data);
           }
         }
@@ -97,28 +110,38 @@
       }
 
       function verifyCode(data) {
-        const record = tokens.find(t => t.id === data);
+        const scannedId = data.trim();
+        // loose match by converting both sides to string
+        const record = tokens.find(t => String(t.id) === scannedId);
+
         if (record) {
           playBeep();
-          statusEl.textContent = record.name;
+          // green and show the name
+          statusEl.textContent = `✔️ ${record.name}`;
           statusEl.style.color = 'lime';
         } else {
           statusEl.textContent = '❌ Not recognized';
           statusEl.style.color = 'red';
         }
+
+        // after 1 s, go back to scanning mode
         setTimeout(() => {
           statusEl.textContent = 'Scanning...';
           statusEl.style.color = '#fff';
-        }, 2000);
+          isScanning = true;
+        }, 1000);
       }
 
       function playBeep() {
-        const oscillator = audioCtx.createOscillator();
-        oscillator.connect(audioCtx.destination);
-        oscillator.frequency.value = 750;
-        oscillator.start();
-        setTimeout(() => oscillator.stop(), 100);
+        const osc = audioCtx.createOscillator();
+        osc.connect(audioCtx.destination);
+        osc.frequency.value = 750;
+        osc.start();
+        setTimeout(() => osc.stop(), 100);
       }
+
+      // kick things off
+      requestAnimationFrame(scanFrame);
     })();
   </script>
 </body>
