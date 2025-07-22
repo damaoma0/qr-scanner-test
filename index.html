@@ -90,7 +90,7 @@
                 if (tokensMap.has(hash)) {
                   resultElem.textContent = tokensMap.get(hash);
                 } else {
-                  resultElem.textContent = token;
+                  resultElem.textContent = 'unauthorized entry';
                 }
               })
               .catch(err => {
