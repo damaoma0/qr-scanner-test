@@ -2,42 +2,68 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>Live QR Token Scanner</title>
+  <title>Live QR Scanner with Counters & Timestamps</title>
   <style>
     body {
       font-family: sans-serif;
       display: flex;
       flex-direction: column;
       align-items: center;
-      padding: 1rem;
+      padding: 1.5rem;
     }
     #video {
       border: 2px solid #444;
       border-radius: 4px;
+      width: 900px;
+      height: 675px;
     }
     #result {
-      margin-top: 2rem;
-      font-size: 2.5rem;
+      margin-top: 1.5rem;
+      font-size: 1.875rem;
+    }
+    #count, #last {
+      margin-top: 0.5rem;
+      font-size: 1.25rem;
+      color: #666;
     }
   </style>
 </head>
 <body>
-  <video id="video" width="1200" height="900" autoplay playsinline></video>
+  <video id="video" autoplay playsinline></video>
   <div id="result">scanning</div>
+  <div id="count"></div>
+  <div id="last"></div>
 
   <!-- jsQR for QR decoding -->
   <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
   <script>
     const video      = document.getElementById('video');
     const resultElem = document.getElementById('result');
+    const countElem  = document.getElementById('count');
+    const lastElem   = document.getElementById('last');
     const canvas     = document.createElement('canvas');
     const ctx        = canvas.getContext('2d');
     const tokensMap  = new Map();
-    let lastToken    = null;
+    let lastData     = null;
+
+    // Persistent storage keys
+    const STORAGE_COUNTS = 'qrScanCounts';
+    const STORAGE_TIMES  = 'qrLastScanTimes';
+
+    // Load or initialize
+    let scanCounts    = JSON.parse(localStorage.getItem(STORAGE_COUNTS) || '{}');
+    let lastScanTimes = JSON.parse(localStorage.getItem(STORAGE_TIMES)  || '{}');
+
+    function saveCounts() {
+      localStorage.setItem(STORAGE_COUNTS, JSON.stringify(scanCounts));
+    }
+    function saveTimes() {
+      localStorage.setItem(STORAGE_TIMES, JSON.stringify(lastScanTimes));
+    }
 
     // SHA-256 → hex string via Web Crypto
     async function sha256hex(str) {
-      const buf = new TextEncoder().encode(str);
+      const buf     = new TextEncoder().encode(str);
       const hashBuf = await crypto.subtle.digest('SHA-256', buf);
       return Array.from(new Uint8Array(hashBuf))
                   .map(b => b.toString(16).padStart(2, '0'))
@@ -46,18 +72,16 @@
 
     // 1) Load tokens.json (hash → name)
     fetch('tokens.json')
-      .then(res => res.json())
+      .then(r => r.json())
       .then(obj => {
-        Object.entries(obj).forEach(([h, name]) => {
-          tokensMap.set(h, name);
-        });
+        Object.entries(obj).forEach(([h, name]) => tokensMap.set(h, name));
       })
       .catch(err => {
         console.error('Failed to load tokens.json', err);
         resultElem.textContent = 'Error loading tokens';
       });
 
-    // 2) Start camera (environment-facing)
+    // 2) Start camera
     navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } })
       .then(stream => {
         video.srcObject = stream;
@@ -76,33 +100,61 @@
         ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
         const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-        const code = jsQR(imgData.data, imgData.width, imgData.height, {
+        const code    = jsQR(imgData.data, imgData.width, imgData.height, {
           inversionAttempts: 'dontInvert'
         });
 
         if (code) {
-          const token = code.data.trim();
-          if (token !== lastToken) {
-            lastToken = token;
+          const data = code.data.trim();
+          if (data !== lastData) {
+            lastData = data;
             resultElem.textContent = 'verifying…';
-            sha256hex(token)
+            countElem.textContent  = '';
+            lastElem.textContent   = '';
+
+            // Determine if payload is already a hash
+            const lookup = tokensMap.has(data)
+              ? Promise.resolve(data)
+              : sha256hex(data);
+
+            lookup
               .then(hash => {
-                if (tokensMap.has(hash)) {
-                  resultElem.textContent = tokensMap.get(hash);
-                } else {
-                  resultElem.textContent = 'unauthorized entry';
+                console.log('QR payload:', data, '→ hash:', hash);
+                if (!tokensMap.has(hash)) {
+                  resultElem.textContent = 'token not recognized';
+                  return;
                 }
+
+                const name = tokensMap.get(hash);
+                const now  = new Date();
+                const last = lastScanTimes[hash] ? new Date(lastScanTimes[hash]) : null;
+                const diff = last ? (now - last) : Infinity;
+
+                // increment total only if ≥ 60s since last
+                if (diff >= 60_000) {
+                  scanCounts[hash] = (scanCounts[hash] || 0) + 1;
+                  lastScanTimes[hash] = now.toISOString();
+                  saveCounts();
+                  saveTimes();
+                }
+
+                // display results
+                resultElem.textContent = name;
+                countElem.textContent  = `Total scans: ${scanCounts[hash] || 0}`;
+                lastElem.textContent   = `Last scanned: ${new Date(lastScanTimes[hash]).toLocaleString()}`;
               })
               .catch(err => {
-                console.error('Hash error:', err);
+                console.error('Verification error:', err);
                 resultElem.textContent = 'verification error';
               });
           }
         } else {
-          // QR gone: reset
-          lastToken = null;
+          // no QR in view: reset display
+          lastData = null;
           if (resultElem.textContent !== 'scanning') {
             resultElem.textContent = 'scanning';
+            countElem.textContent  = '';
+            lastElem.textContent   = '';
           }
         }
       }
